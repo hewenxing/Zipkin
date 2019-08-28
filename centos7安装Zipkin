@@ -1,0 +1,171 @@
+安装Zipkin
+docker安装Zipkin
+docker run -d -p 9411:9411 openzipkin/zipkin
+
+
+在使用Zipkin之前，保证已安装好docker和Docker Compose工具
+
+vim docker-compose.yml
+version: '3.6'
+
+services:
+  storage:
+    image: openzipkin/zipkin-mysql
+    ports:
+      - 3306:3306
+
+  # The zipkin process services the UI, and also exposes a POST endpoint that
+  # instrumentation can send trace data to. Scribe is disabled by default.
+  zipkin:
+    image: openzipkin/zipkin
+    # Environment settings are defined here https://github.com/openzipkin/zipkin/tree/1.19.0/zipkin-server#environment-variables
+    environment:
+      - STORAGE_TYPE=mysql
+      # Point the zipkin at the storage backend
+      - MYSQL_HOST=storage
+      # Uncomment to enable scribe
+      # - SCRIBE_ENABLED=true
+      # Uncomment to enable self-tracing
+      # - SELF_TRACING_ENABLED=true
+      # Uncomment to enable debug logging
+      # - JAVA_OPTS=-Dlogging.level.zipkin=DEBUG -Dlogging.level.zipkin2=DEBUG
+    ports:
+      # Port used for the Zipkin UI and HTTP Api
+      - 9411:9411
+      # Uncomment if you set SCRIBE_ENABLED=true
+      # - 9410:9410
+    depends_on:
+      - storage
+
+  # Adds a cron to process spans since midnight every hour, and all spans each day
+  # This data is served by http://172.16.35.81:8080/dependency
+  #
+  # For more details, see https://github.com/openzipkin/docker-zipkin-dependencies
+  dependencies:
+    image: openzipkin/zipkin-dependencies
+    entrypoint: crond -f
+    environment:
+      - STORAGE_TYPE=mysql
+      - MYSQL_HOST=storage
+      # Add the baked-in username and password for the zipkin-mysql image
+      - MYSQL_USER=zipkin
+      - MYSQL_PASS=zipkin
+      # Uncomment to see dependency processing logs
+      # - ZIPKIN_LOG_LEVEL=DEBUG
+      # Uncomment to adjust memory used by the dependencies job
+      # - JAVA_OPTS=-verbose:gc -Xms1G -Xmx1G
+    depends_on:
+      - storage
+
+vim docker-compose-kafka.yml
+# This file uses the version 2 docker-compose file format, described here:
+# https://docs.docker.com/compose/compose-file/#version-2
+#
+# It extends the default configuration from docker-compose.yml to add a test
+# kafka server, which is used as a span transport.
+
+version: '3.6'
+
+services:
+  zipkin:
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=172.16.35.81:9092
+
+
+vim kafka-compose.yml
+version: '3.6'
+
+services:
+  zeezookeeper:
+    image: 172.16.35.81:8083/zookeeper-zeesec
+    volumes:
+      - "zoodata:/data"
+      - "zoodatalog:/datalog"
+      - "zoologs:/logs"
+    ports:
+      - "2181:2181"
+
+  zeekafka:
+    image: 172.16.35.81:8083/kafka-zeesec
+    volumes:
+      - "kafka:/kafka"
+      - "kafka-conf:/opt/kafka/config"
+    depends_on:
+      - zeezookeeper
+    ports:
+      - "9092:9092"
+
+  zeekafkamanager:
+    image: hlebalbau/kafka-manager:latest
+    depends_on:
+      - zeezookeeper
+    ports:
+      - "9000:9000"
+    environment:
+      ZK_HOSTS: "zeezookeeper:2181"
+      APPLICATION_SECRET: "random-secret"
+    command: -Dpidfile.path=/dev/null
+
+volumes:
+  zoodata:
+  zoodatalog:
+  zoologs:
+  kafka:
+  kafka-conf:
+
+networks:
+  zeenet:
+    driver: overlay
+    attachable: true
+
+
+vim docker-compose-elasticsearch.yml
+# This file uses the version 2 docker-compose file format, described here:
+# https://docs.docker.com/compose/compose-file/#version-2
+#
+# It extends the default configuration from docker-compose.yml to run the
+# zipkin-elasticsearch container instead of the zipkin-mysql container.
+
+version: '3.6'
+
+services:
+  # Run Elasticsearch instead of MySQL
+  storage:
+    image: openzipkin/zipkin-elasticsearch6
+    ports:
+       - 9200:9200
+
+  # Switch storage type to Elasticsearch
+  zipkin:
+    image: openzipkin/zipkin
+    environment:
+      - STORAGE_TYPE=elasticsearch
+      # Point the zipkin at the storage backend
+      - ES_HOSTS=storage
+      # Uncomment to see requests to and from elasticsearch
+      # - ES_HTTP_LOGGING=BODY
+
+  dependencies:
+    environment:
+      - STORAGE_TYPE=elasticsearch
+      - ES_HOSTS=storage
+
+
+要启动默认的docker-compose配置，请运行
+docker-compose up
+
+docker-compose配置可以使用该docker-compose-cassandra.yml文件扩展为使用Cassandra而不是MySQL 。该文件使用 docker-compose覆盖 将一个存储容器替换为另一个存储容器
+要启动Cassandra支持的配置，请运行
+docker-compose -f docker-compose.yml -f docker-compose-cassandra.yml up
+
+docker-compose配置可以使用该docker-compose-elasticsearch.yml文件扩展为使用Elasticsearch而不是MySQL 。该文件使用 docker-compose覆盖 将一个存储容器替换为另一个存储容器
+要启动Elasticsearch支持的配置，请运行
+docker-compose -f docker-compose.yml -f docker-compose-elasticsearch.yml up
+
+docker-compose配置可以扩展为托管测试Kafka代理并 使用该文件激活Kafka收集器docker-compose-kafka.yml。该文件使用 docker-compose覆盖 来添加Kafka + ZooKeeper容器和相关设置
+要启动MySQL + Kafka配置，请运行
+docker-compose -f docker-compose.yml -f docker-compose-kafka.yml up
+
+可以使用该docker-compose-ui.yml文件扩展docker-compose配置以在端口80上托管UI 。该文件使用 docker -compose覆盖来添加NGINX容器和相关设置
+要启动NGINX配置，请运行
+docker-compose -f docker-compose.yml -f docker-compose-ui.yml up
